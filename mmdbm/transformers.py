@@ -68,8 +68,9 @@ def assign_e_from_e(state: State, i: int, k: int, c: int) -> State:
     EE, AA, EA, AE = st.EE.copy(), st.AA.copy(), st.EA.copy(), st.AE.copy()
     nE, nA = st.nE, st.nA
 
-    EE[i, k] = np.min(EE[i, k], c)
-    EE[k, i] = np.min(EE[k, i], -c)
+    # scalar tighten with builtins
+    EE[i, k] = min(EE[i, k], c)
+    EE[k, i] = min(EE[k, i], -c)
 
     if nA > 0:
         EA[i - 1, :] = np.minimum(EA[i - 1, :], EA[k - 1, :] + c)
@@ -89,22 +90,6 @@ def assign_a_from_a(state: State, j: int, ell: int, c: int) -> State:
     if nE > 0:
         AE[j - 1, :] = np.maximum(AE[j - 1, :], AE[ell - 1, :] + c)
         EA[:, j - 1] = np.minimum(EA[:, j - 1], EA[:, ell - 1] - c)
-
-    return closure(State(EE=EE, AA=AA, EA=EA, AE=AE))
-
-
-def assign_e_from_e(state: State, i: int, k: int, c: int) -> State:
-    st = forget_e(state, i)
-    EE, AA, EA, AE = st.EE.copy(), st.AA.copy(), st.EA.copy(), st.AE.copy()
-    nE, nA = st.nE, st.nA
-
-    # scalar tighten with builtins
-    EE[i, k] = min(EE[i, k], c)
-    EE[k, i] = min(EE[k, i], -c)
-
-    if nA > 0:
-        EA[i - 1, :] = np.minimum(EA[i - 1, :], EA[k - 1, :] + c)
-        AE[:, i - 1] = np.maximum(AE[:, i - 1], AE[:, k - 1] - c)
 
     return closure(State(EE=EE, AA=AA, EA=EA, AE=AE))
 

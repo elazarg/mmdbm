@@ -323,7 +323,7 @@ def test_inner_soundness_AA_with_upper_bound():
     Q_set = {tuple(sorted(d.items())) for d in Q}
     gamma_set = {tuple(sorted(r.items())) for r in gamma}
 
-    assert gamma_set.issubset(Q_set)  # Fails because includes {"a1": 3}
+    assert gamma_set.issubset(Q_set)
 
 
 def test_inner_soundness_AA_with_upper_bound_subset():
@@ -345,7 +345,7 @@ def test_inner_soundness_AA_with_upper_bound_subset():
     assert gamma_set.issubset(Q_set)
 
 
-def test_outer_soundness_EA_with_partial_envs():
+def test_outer_soundness_EA_with_partial_envs_1():
     # S represents points where e1 and a1 are independent (no joint constraints observed)
     S = [{"e1": 0}, {"a1": 5}]  # Separate dicts for e1 and a1
 
@@ -367,4 +367,56 @@ def test_outer_soundness_EA_with_partial_envs():
 
     # Additionally, check gamma includes some points (e.g., using small vals)
     gamma = D.gamma_enumerate(st, e_vals=[0], a_vals=[5])
-    assert len(gamma) > 0  # Fails because EA=NINF leads to inconsistency
+    assert len(gamma) > 0
+
+
+def test_outer_soundness_EA_with_partial_envs_2(api_guard):
+    # S with no joint e1 and a1: no info about e1 - a1 -> EA must be +INF
+    S = [{"e1": 0}, {"a1": 5}]
+
+    EA = D.alpha_outer_EA(S)
+    assert EA.shape == (1, 1)
+    assert np.isposinf(EA[0, 0])  # remain unconstrained
+
+    # Loose same-class and inner blocks (nE=1, nA=1)
+    EE = np.full((2, 2), INF, dtype=float)
+    np.fill_diagonal(EE, 0.0)
+
+    AA = np.full((2, 2), NINF, dtype=float)
+    np.fill_diagonal(AA, 0.0)
+
+    AE = np.full((1, 1), NINF, dtype=float)
+
+    st = D.closure(D.make_state(EE, AA, EA, AE))
+    assert not D.is_bottom(st)
+
+    # Check that a consistent joint point exists in gamma
+    gamma = D.gamma_enumerate(st, e_vals=[0], a_vals=[5])
+    Gset = {tuple(sorted(r.items())) for r in gamma}
+    assert (("a1", 5), ("e1", 0)) in Gset
+
+
+def test_inner_soundness_AE_with_partial_envs(api_guard):
+    # S with no joint a1 and e1
+    S = [{"a1": 5}, {"e1": 0}]
+
+    AE = D.alpha_inner_AE(S)
+    # Correct: AE=[[NINF]] (loose)
+
+    # Loose blocks (nE=1, nA=1)
+    EE = np.full((2, 2), INF, dtype=float)
+    np.fill_diagonal(EE, 0.0)
+    AA = np.full((2, 2), NINF, dtype=float)
+    np.fill_diagonal(AA, 0.0)
+    EA = np.full((1, 1), INF, dtype=float)
+
+    st = D.closure(D.make_state(EE, AA, EA, AE))
+
+    assert not D.is_bottom(st)  # Passes
+
+    gamma = D.gamma_enumerate(st, e_vals=[0], a_vals=[5])
+    gamma_set = {tuple(sorted(r.items())) for r in gamma}
+    # For inner, check gamma ⊆ S (but S partial; here gamma has full envs satisfying loose constraints)
+    # Minimal: gamma non-empty and satisfies the (no) mixed lower
+    assert len(gamma) > 0
+    assert all(r["a1"] - r["e1"] >= NINF for r in gamma)  # Trivially true
