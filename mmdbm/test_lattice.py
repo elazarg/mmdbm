@@ -274,7 +274,7 @@ def test_bottom_via_cross_inconsistency(api_guard, sizes):
     EE, AA, EA, AE = build_zero_closed(nE, nA)
     if nE >= 1 and nA >= 1:
         EA[0][0] = -1
-        AE[0][0] = -2  # EA=-1, -AE=2 ⇒ EA < -AE ⇒ inconsistent
+        AE[0][0] = -2  # EA=-1, -AE=2 => EA < -AE => inconsistent
     st = D.closure(D.make_state(EE, AA, EA, AE))
     assert D.is_bottom(st)
 
