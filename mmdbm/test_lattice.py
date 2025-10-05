@@ -1,4 +1,6 @@
 import pytest
+import numpy as np
+
 from . import lattice as D
 from conftest import INF, NINF, build_zero_closed, get_blocks, envs
 
@@ -302,3 +304,42 @@ def test_closure_idempotent_and_gamma_invariant(api_guard, sizes, grid_vals):
         tuple(sorted(r.items())) for r in D.gamma_enumerate(st2, grid_vals, grid_vals)
     )
     assert G1 == G2
+
+
+def test_inner_soundness_AA_with_upper_bound():
+    nE, nA = 0, 1
+    a_vals = [0, 1, 2, 3]  # Extended to include value beyond max in Q
+    Q = [{"a1": v} for v in [0, 1, 2]]  # Q has a1 in [0,2]
+
+    AA = D.alpha_inner_AA(Q)
+    # Loose outer blocks (since nE=0, EA and AE empty)
+    EE = np.array([[0.0]], dtype=float)  # Minimal for nE=0
+    EA = np.array([], dtype=float).reshape(0, 1)
+    AE = np.array([], dtype=float).reshape(1, 0)
+
+    st = D.closure(D.make_state(EE, AA, EA, AE))
+    gamma = D.gamma_enumerate(st, e_vals=[], a_vals=a_vals)
+
+    Q_set = {tuple(sorted(d.items())) for d in Q}
+    gamma_set = {tuple(sorted(r.items())) for r in gamma}
+
+    assert gamma_set.issubset(Q_set)  # Fails because includes {"a1": 3}
+
+
+def test_inner_soundness_AA_with_upper_bound_subset():
+    # Q = { a1 in [0,2] } on a larger grid; gamma must not include 3
+    a_grid = [0, 1, 2, 3]  # note the 3 outside Q
+    Q = [{"a1": v} for v in [0, 1, 2]]
+
+    AA = D.alpha_inner_AA(Q)
+    # nE = 0
+    EE = np.array([[0.0]])
+    EA = np.zeros((0, 1), dtype=float)
+    AE = np.zeros((1, 0), dtype=float)
+
+    st = D.closure(D.make_state(EE, AA, EA, AE))
+    gamma = D.gamma_enumerate(st, e_vals=[], a_vals=a_grid)
+
+    Q_set = {tuple(sorted(d.items())) for d in Q}
+    gamma_set = {tuple(sorted(r.items())) for r in gamma}
+    assert gamma_set.issubset(Q_set)

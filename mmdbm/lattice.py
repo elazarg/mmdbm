@@ -414,20 +414,70 @@ def alpha_outer_EA(S: list[dict[str, int]]) -> Block:
     return EA
 
 
-def alpha_inner_AA(Q: list[dict[str, int]]) -> Block:
+def alpha_inner_AA(Q: list[dict[str, int]]) -> np.ndarray:
     """
-    Right adjoint for AA (inner): set unary lower bounds a_j - 0 >= L_j
-    with L_j := min_Q a_j; others stay -inf; diagonal = 0.
+    Right-adjoint (inner) abstraction for AA:
+      - AA[i,0] = min_Q a_i              (lower unary: a_i >= min)
+      - AA[0,i] = -max_Q a_i             (upper unary: a_i <= max)
+      - AA[i,j] = inf_Q (a_i - a_j)      (pairwise lower bounds)
+    Returns an (nA+1) x (nA+1) matrix with AA[0,0] = 0, diag = 0,
+    and NINF where no constraint is supported by Q.
     """
-    nA = _max_a_index(Q)
-    AA = np.full((nA + 1, nA + 1), NINF, dtype=float)
-    np.fill_diagonal(AA, 0.0)
-    if not Q:
-        return AA
 
+    # Discover how many a-variables appear
+    def idx_of_a(k: str) -> int | None:
+        if not k or k[0] != "a":
+            return None
+        try:
+            return int(k[1:])
+        except ValueError:
+            return None
+
+    # find max index present
+    nA = 0
+    for d in Q:
+        for k in d.keys():
+            j = idx_of_a(k)
+            if j is not None and j > nA:
+                nA = j
+
+    # No a-variables: AA is just [0]
+    if nA == 0:
+        return np.array([[0.0]])
+
+    AA = np.full((nA + 1, nA + 1), NINF, dtype=float)
+    # diagonals are 0
+    for t in range(nA + 1):
+        AA[t, t] = 0.0
+
+    # Collect per-variable values
+    vals_per_var: list[list[int]] = [[] for _ in range(nA + 1)]  # index 0 unused
+    for d in Q:
+        for j in range(1, nA + 1):
+            k = f"a{j}"
+            if k in d:
+                vals_per_var[j].append(int(d[k]))
+
+    # Unaries
     for j in range(1, nA + 1):
-        Lj = min(int(d[f"a{j}"]) for d in Q if f"a{j}" in d)
-        AA[j, 0] = float(Lj)
+        vals = vals_per_var[j]
+        if vals:
+            # lower unary: a_j >= min(vals)
+            AA[j, 0] = max(AA[j, 0], float(min(vals)))
+            # upper unary: a_j <= max(vals) => 0 - a_j >= -max(vals)
+            AA[0, j] = max(AA[0, j], float(-max(vals)))
+
+    # Pairwise lower bounds
+    for i in range(1, nA + 1):
+        for j in range(1, nA + 1):
+            diffs: list[int] = []
+            for d in Q:
+                ki, kj = f"a{i}", f"a{j}"
+                if ki in d and kj in d:
+                    diffs.append(int(d[ki]) - int(d[kj]))
+            if diffs:
+                AA[i, j] = max(AA[i, j], float(min(diffs)))
+
     return AA
 
 
