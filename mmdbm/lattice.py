@@ -396,21 +396,60 @@ def alpha_outer_EE(P: list[dict[str, int]]) -> Block:
     return EE
 
 
-def alpha_outer_EA(S: list[dict[str, int]]) -> Block:
-    """Left adjoint for EA: sup of e_i - a_j over S."""
-    nE = _max_e_index(S)
-    nA = _max_a_index(S)
+def alpha_outer_EA(S: list[dict[str, int]]) -> np.ndarray:
+    """
+    Outer (may) abstraction for EA.
+    For each i,j we compute sup_{(e,a) in S with both e_i,a_j present} (e_i - a_j).
+    If no joint observation exists for (i,j), we must return +INF (no constraint).
+    """
+
+    # discover dimensions
+    def max_idx(prefix: str) -> int:
+        m = 0
+        for d in S:
+            for k in d.keys():
+                if k.startswith(prefix):
+                    try:
+                        m = max(m, int(k[1:]))
+                    except ValueError:
+                        pass
+        return m
+
+    nE = max_idx("e")
+    nA = max_idx("a")
     EA = np.full((nE, nA), INF, dtype=float)
-    if not S:
+    if nE == 0 or nA == 0:
         return EA
 
-    for i in range(1, nE + 1):
-        for j in range(1, nA + 1):
-            supv = NINF
-            for d in S:
-                if f"e{i}" in d and f"a{j}" in d:
-                    supv = max(supv, int(d[f"e{i}"]) - int(d[f"a{j}"]))
-            EA[i - 1, j - 1] = float(supv)
+    # track sup values where we have joint observations
+    sup_vals = np.full((nE, nA), NINF, dtype=float)
+    seen = np.zeros((nE, nA), dtype=bool)
+
+    for d in S:
+        # collect present e’s and a’s in this dict
+        es = {}
+        as_ = {}
+        for k, v in d.items():
+            if k.startswith("e"):
+                try:
+                    es[int(k[1:])] = int(v)
+                except ValueError:
+                    pass
+            elif k.startswith("a"):
+                try:
+                    as_[int(k[1:])] = int(v)
+                except ValueError:
+                    pass
+        # update sups for all jointly present pairs
+        for i, ei in es.items():
+            if 1 <= i <= nE:
+                for j, aj in as_.items():
+                    if 1 <= j <= nA:
+                        seen[i - 1, j - 1] = True
+                        sup_vals[i - 1, j - 1] = max(sup_vals[i - 1, j - 1], ei - aj)
+
+    # finalize: where seen → sup value; where not seen → keep +INF (no constraint)
+    EA[seen] = sup_vals[seen]
     return EA
 
 

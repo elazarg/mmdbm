@@ -343,3 +343,28 @@ def test_inner_soundness_AA_with_upper_bound_subset():
     Q_set = {tuple(sorted(d.items())) for d in Q}
     gamma_set = {tuple(sorted(r.items())) for r in gamma}
     assert gamma_set.issubset(Q_set)
+
+
+def test_outer_soundness_EA_with_partial_envs():
+    # S represents points where e1 and a1 are independent (no joint constraints observed)
+    S = [{"e1": 0}, {"a1": 5}]  # Separate dicts for e1 and a1
+
+    # Compute abstraction
+    EA = D.alpha_outer_EA(S)
+    # Since nE=1, nA=1, but no joint points, should be INF (loose), not NINF
+
+    # Loose same-class blocks
+    EE = np.full((2, 2), INF, dtype=float)
+    np.fill_diagonal(EE, 0.0)
+    AA = np.full((2, 2), NINF, dtype=float)
+    np.fill_diagonal(AA, 0.0)
+    AE = np.full((1, 1), NINF, dtype=float)
+
+    st = D.closure(D.make_state(EE, AA, EA, AE))
+
+    # The abstraction should not be bottom; gamma should be non-empty
+    assert not D.is_bottom(st)
+
+    # Additionally, check gamma includes some points (e.g., using small vals)
+    gamma = D.gamma_enumerate(st, e_vals=[0], a_vals=[5])
+    assert len(gamma) > 0  # Fails because EA=NINF leads to inconsistency
