@@ -1,4 +1,4 @@
-# mmdbm — Combined May–Must Difference-Bound Domain
+# mmdbm - Combined May–Must DBM Abstract Domain
 
 `mmdbm` is a reference implementation of the **Combined May–Must Difference-Bound Matrix (DBM) domain**, a numerical abstract domain designed to jointly model *over-approximated (may)* and *under-approximated (must)* relational constraints.
 
@@ -8,8 +8,8 @@ It provides a minimal, self-contained Python module implementing the domain’s 
 
 The domain tracks difference constraints between two disjoint classes of variables:
 
-* **May variables** (`e₁, e₂, …`) — outer (over-approximation) layer
-* **Must variables** (`a₁, a₂, …`) — inner (under-approximation) layer
+* **May variables** (`e₁, e₂, ...`) - outer (over-approximation) layer
+* **Must variables** (`a₁, a₂, ...`) - inner (under-approximation) layer
 
 Each abstract state consists of four block matrices:
 
