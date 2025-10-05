@@ -2,7 +2,7 @@ import itertools
 import math
 import pytest
 
-from mmdbm import mmdbm as D
+from mmdbm import lattice as D
 
 INF = math.inf
 NINF = -math.inf

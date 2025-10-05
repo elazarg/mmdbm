@@ -1,5 +1,5 @@
 import pytest
-from . import mmdbm as D
+from . import lattice as D
 from conftest import INF, NINF, build_zero_closed, get_blocks, envs
 
 # -------------------------

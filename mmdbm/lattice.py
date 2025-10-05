@@ -19,8 +19,6 @@ Public API:
 Blocks are NumPy ndarrays (dtype=float to support +/-inf).
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any
 import math
@@ -33,12 +31,20 @@ NINF: int = -math.inf  # type: ignore[assignment]
 Block = np.ndarray
 
 
-@dataclass
+@dataclass(frozen=True)
 class State:
     EE: Block  # (nE+1) x (nE+1) upper bounds (<=)
     AA: Block  # (nA+1) x (nA+1) lower bounds (>=)
     EA: Block  # nE x nA upper bounds (<=)
     AE: Block  # nA x nE lower bounds (>=)
+
+    @property
+    def nE(self) -> int:
+        return self.EE.shape[0] - 1
+
+    @property
+    def nA(self) -> int:
+        return self.AA.shape[0] - 1
 
 
 # ---------------- Helpers ----------------
