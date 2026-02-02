@@ -184,9 +184,13 @@ Let $\Rinf = \R \cup \{-\infty, +\infty\}$ denote the extended reals with the
 usual arithmetic conventions: $x + (+\infty) = +\infty$ for $x \neq -\infty$,
 $x + (-\infty) = -\infty$ for $x \neq +\infty$, and $\min/\max$ extend naturally.
 Undefined forms such as $(+\infty) + (-\infty)$ or $(+\infty) - (+\infty)$ may
-arise in closure rule candidates; we treat any such candidate as providing no
-improvement (i.e., skip it). In floating-point implementations, this corresponds
-to ignoring NaN results.
+arise in closure rule candidates;
+we treat such candidates as unusable because they do not denote a valid bound
+in $\Rinf$; operationally, a closure update is applied only when the candidate
+evaluates to a well-defined element of $\Rinf$. This is sound because closure
+tightens entries only using semantically valid consequences of existing
+constraints, and an undefined arithmetic form does not correspond to a valid
+composed constraint.
 
 For a constraint $x - y \leq c$, we call $c$ an \emph{upper bound} on the
 difference $x - y$. For a constraint $x - y \geq c$, we call $c$ a
@@ -286,6 +290,17 @@ An abstract state $S = (EE, AA, M^+, M^-)$ consists of four matrices:
 \end{enumerate}
 \end{definition}
 
+\begin{remark}[Representation vs.\ Polarity of Information]
+Although we classify variables by which \emph{direction} of information is
+most important (E: upper bounds; A: guaranteed lower bounds), the internal
+representation remains relational. In particular, $EE$ stores all pairwise
+upper bounds on differences $e_i-e_j$, which also determines lower bounds via
+negation (e.g., $\lower{(e_i)}=-EE[0,i]$). Likewise, $AA$ stores all pairwise
+lower bounds on $a_i-a_j$, which determines upper bounds via negation.
+The \emph{polarity-aware} aspect is the lattice structure (notably join/meet)
+and the interpretation of which bounds are weakened at control-flow merges.
+\end{remark}
+
 \begin{remark}[Index Convention]
 $EE$ and $AA$ are $(n+1) \times (n+1)$ matrices with index 0 representing the
 constant zero. $M^+$ and $M^-$ are $n_E \times n_A$ matrices with 0-based indexing
@@ -333,6 +348,22 @@ M^-[i{-}1, j{-}1] \leq \rho(e_i) - \rho(a_j) \leq M^+[i{-}1, j{-}1] \}
 \end{align*}
 where $\rho(e_0) = \rho(a_0) = 0$.
 \end{definition}
+
+\begin{lemma}[Coupling via the Shared Constant Zero]
+\label{lem:two-zero-coupling}
+Let $S=(EE,AA,M^+,M^-)$ be a state and let $\gamma(S)$ enforce
+$\rho(e_0)=\rho(a_0)=0$ as in \Cref{def:gamma}. Then:
+\begin{enumerate}
+\item Any valuation $\rho$ satisfying the unary bounds in $EE$ and $AA$ induces
+sound mixed bounds of the form in Rule~9.
+\item Conversely, any valuation $\rho$ satisfying mixed bounds and the unary
+bounds of the opposite class induces sound unary bounds of the form in
+Rules~10--11.
+\end{enumerate}
+In this precise sense, Rules~9--11 are exactly the closure steps obtained by
+allowing paths that pass through the shared constant $0$ (represented by both
+$e_0$ and $a_0$).
+\end{lemma}
 
 \textbf{Two-zero invariant:} Although closure operates on two index-distinct
 nodes $e_0$ and $a_0$, they represent the same constant 0 in concretization.
@@ -445,10 +476,14 @@ comparison follows.
 The \emph{raw join} is defined element-wise:
 \[
 S_1 \join S_2 = (\max(EE_1, EE_2), \min(AA_1, AA_2),
-\max(M^+_1, M^+_2), \min(M^-_1, M^-_2))
+\max(M^+_1, M^+_2), \min(M^-_1, M^-_2)).
 \]
-For closed states, the \emph{canonical join} applies closure:
-$S_1 \join^* S_2 := (S_1 \join S_2)^*$.
+For closed states, we define the \emph{canonical join} as join-then-close:
+\[
+S_1 \join^* S_2 \;:=\; (S_1 \join S_2)^*.
+\]
+Closure is not an invariant of the lattice; $\join^*$ is used when a closed
+representative is required (e.g., for the LUB statement below).
 \end{definition}
 
 \begin{theorem}[Join Soundness]
@@ -552,6 +587,7 @@ Then $\conc(T) \subseteq \conc(S_1) \cap \conc(S_2) = \conc(S_1 \meet S_2)
 = \conc(S_1 \meet^* S_2)$, so $T \order S_1 \meet^* S_2$.
 \end{proof}
 
+
 %==============================================================================
 \section{Closure}
 \label{sec:closure}
@@ -612,6 +648,11 @@ constraints involving the shared constant.
     $M^\pm[i{-}1, j{-}1]$.
 \end{itemize}
 
+\begin{remark}[Indexing Convention Used Below]
+When we quantify $e_i$ we use $i \in [1,n_E]$; when we quantify $a_j$ we use
+$j \in [1,n_A]$. Mixed matrix entries are then $M^\pm[i-1,j-1]$.
+\end{remark}
+
 \textbf{Sign dictionary} (for deriving reversed-order bounds):
 \begin{itemize}
     \item $EE[p,q] = \upper{(e_p - e_q)}$, hence $\lower{(e_q - e_p)} = -EE[p,q]$.
@@ -660,18 +701,18 @@ M^-[i,j] \leftarrow \max(M^-[i,j], M^-[i,k] + AA[k+1, j+1])
 \]
 
 \textbf{7. E via Mixed (E $\to$ A $\to$ E):}
-For all $i,j \in [1, n_E]$, $k \in [0, n_A{-}1]$:
+For all $i,j \in [1,n_E]$ and $k \in [1,n_A]$:
 \[
-EE[i,j] \leftarrow \min(EE[i,j], M^+[i-1, k] + (-M^-[j-1, k]))
+EE[i,j] \leftarrow \min\!\big(EE[i,j],\ M^+[i-1,k-1] + (-M^-[j-1,k-1])\big).
 \]
-This derives $\upper{(e_i - e_j)} \leq \upper{(e_i - a_{k+1})} + \upper{(a_{k+1} - e_j)}$.
+This derives $\upper{(e_i - e_j)} \leq \upper{(e_i - a_{k})} + \upper{(a_{k} - e_j)}$.
 
 \textbf{8. A via Mixed (A $\to$ E $\to$ A):}
-For all $i,j \in [1, n_A]$, $k \in [0, n_E{-}1]$:
+For all $i,j \in [1,n_A]$ and $k \in [1,n_E]$:
 \[
-AA[i,j] \leftarrow \max(AA[i,j], (-M^+[k, i-1]) + M^-[k, j-1])
+AA[i,j] \leftarrow \max\!\big(AA[i,j],\ (-M^+[k-1,i-1]) + M^-[k-1,j-1]\big).
 \]
-This derives $\lower{(a_i - a_j)} \geq \lower{(a_i - e_{k+1})} + \lower{(e_{k+1} - a_j)}$.
+This derives $\lower{(a_i - a_j)} \geq \lower{(a_i - e_{k})} + \lower{(e_{k} - a_j)}$.
 
 \textbf{9. Unary-Mixed Propagation:}
 For all $i \in [0, n_E{-}1]$, $j \in [0, n_A{-}1]$:
@@ -747,14 +788,15 @@ intermediates using $\lower{(x-z)} \geq \lower{(x-y)} + \lower{(y-z)}$.
 
 \textbf{Rules 7--8 (Cross-polarity):} These mix upper and lower bounds via
 negation-based reversal. For Rule 7, with $\rho \in \conc(S)$, $i,j \in [1, n_E]$,
-$k \in [0, n_A{-}1]$ (intermediate $a_{k+1}$):
+and $k \in [1, n_A]$ (intermediate $a_k$):
 \begin{align*}
-\rho(e_i) - \rho(e_j) &= (\rho(e_i) - \rho(a_{k+1})) + (\rho(a_{k+1}) - \rho(e_j)) \\
-&\leq M^+[i-1, k] + (-M^-[j-1, k])
+\rho(e_i) - \rho(e_j)
+&= (\rho(e_i) - \rho(a_k)) + (\rho(a_k) - \rho(e_j)) \\
+&\leq M^+[i-1, k-1] + (-M^-[j-1, k-1])
 \end{align*}
-using $\rho(e_i) - \rho(a_{k+1}) \leq M^+[i-1, k]$ and
-$\rho(a_{k+1}) - \rho(e_j) \leq -M^-[j-1, k]$ (from
-$\rho(e_j) - \rho(a_{k+1}) \geq M^-[j-1, k]$). Rule 8 is symmetric.
+using $\rho(e_i) - \rho(a_k) \leq M^+[i-1, k-1]$ and
+$\rho(a_k) - \rho(e_j) \leq -M^-[j-1, k-1]$ (from
+$\rho(e_j) - \rho(a_k) \geq M^-[j-1, k-1]$). Rule 8 is symmetric.
 \end{proof}
 
 \begin{theorem}[Closure Preserves Concretization]
@@ -770,11 +812,14 @@ iteration preserves $\conc$, and equality holds at fixpoint.
 
 \begin{remark}[Closure Complexity]
 \label{rem:closure-complexity}
-The fixpoint of Rules 1--11 can be computed in $O(n^3)$ time, where
-$n = n_E + n_A + 2$, by adapting Floyd-Warshall. The closure reduces to
-shortest paths (for upper bounds) and longest paths (for lower bounds) on a
-signed graph with $n$ nodes. See \cite{mine-thesis} for the general
-DBM-to-shortest-paths reduction.
+One can compute closure in $O(n^3)$ time by a structured relaxation order
+analogous to Floyd--Warshall, after viewing the system as a set of
+difference constraints over a bipolar graph with reversal edges
+(\Cref{rem:closure-graph}). We do not rely on this bound in the reference
+implementation, which uses chaotic (worklist-style) iteration; the latter is
+simple and monotone but may perform more than $O(n^3)$ relaxations in the
+worst case. In practice, it terminates quickly for the intended verification
+instances (see \Cref{sec:impl}).
 \end{remark}
 
 \begin{remark}[Implementation]
@@ -784,8 +829,9 @@ rule-application operator is monotone in the product lattice order, iteration
 to stability yields the least fixpoint of Rules 1--11, which coincides with
 the path-closure semantics in exact arithmetic. Complexity may differ from the
 $O(n^3)$ Floyd-Warshall bound. With finite-precision arithmetic (floats),
-termination is guaranteed because each entry changes monotonically and has
-finitely many representable values. See \Cref{sec:impl}.
+termination is guaranteed in finite-precision arithmetic because each entry is
+updated monotonically (by $\min$ or $\max$) and thus can change only finitely
+many times among representable floating-point values. See \Cref{sec:impl}.
 \end{remark}
 
 \begin{remark}[Bottom Detection]
@@ -793,6 +839,59 @@ Closure can create inconsistency (e.g., Rule 2 may push $AA[j,j]$ above 0 via
 a positive cycle of lower bounds). After closure, check the bottom conditions
 from \Cref{def:bottom}: if $EE[i,i] < 0$, $AA[j,j] > 0$, or $M^-[i,j] > M^+[i,j]$
 for any indices, return $\bot$.
+\end{remark}
+
+\subsection{Widening}
+\label{sec:widening}
+
+\begin{definition}[Component-wise Widening]
+Let $S_1=(EE_1,AA_1,M^+_1,M^-_1)$ and $S_2=(EE_2,AA_2,M^+_2,M^-_2)$.
+Define $S_1 \nabla S_2 = (EE,AA,M^+,M^-)$ entrywise by:
+\begin{itemize}
+\item For upper-bound components ($EE$, $M^+$):
+\[
+EE[i,j] =
+\begin{cases}
+EE_1[i,j] & \text{if } EE_2[i,j] \le EE_1[i,j] \\
++\infty & \text{otherwise}
+\end{cases}
+\qquad
+M^+[p,q] =
+\begin{cases}
+M^+_1[p,q] & \text{if } M^+_2[p,q] \le M^+_1[p,q] \\
++\infty & \text{otherwise.}
+\end{cases}
+\]
+\item For lower-bound components ($AA$, $M^-$):
+\[
+AA[i,j] =
+\begin{cases}
+AA_1[i,j] & \text{if } AA_2[i,j] \ge AA_1[i,j] \\
+-\infty & \text{otherwise}
+\end{cases}
+\qquad
+M^-[p,q] =
+\begin{cases}
+M^-_1[p,q] & \text{if } M^-_2[p,q] \ge M^-_1[p,q] \\
+-\infty & \text{otherwise.}
+\end{cases}
+\]
+\end{itemize}
+\end{definition}
+
+\begin{remark}
+This is the direct analogue of classical DBM widening: if an upper bound keeps
+increasing, we drop it to $+\infty$; if a guaranteed lower bound keeps
+decreasing, we drop it to $-\infty$. More precise widenings (e.g.,
+threshold-based) can be plugged in component-wise.
+
+However, care is needed with normalization after widening. Closure (and related
+``strengthening'' steps in DBM-like domains) can re-tighten constraints that
+widening just dropped, and naive iteration schemes that repeatedly apply
+widening and full closure can behave poorly. A common practice is to apply
+widening during fixpoint iteration while using closure sparingly (e.g., for
+queries, at phase boundaries, or followed by a narrowing phase), or to use
+threshold-based widenings.
 \end{remark}
 
 %==============================================================================
@@ -810,6 +909,8 @@ $r$ (right reach).
 We use $n_E = 0$ (no may-variables) and $n_A = 2$ ($a_1 = \text{left\_reach}$,
 $a_2 = \text{right\_reach}$). We track \emph{guaranteed} reach, so all
 constraints are lower bounds ($\geq$).
+All unspecified off-diagonal entries are $-\infty$, expressing the absence of
+a guaranteed lower bound on that difference.
 
 \textbf{Branch 1:} Accessible offsets $[p+0, p+1]$ means left\_reach $\geq 0$,
 right\_reach $\geq 1$.
@@ -847,7 +948,7 @@ With $n_E = 1$ (index) and $n_A = 1$ (size):
     \item $AA = \min$: size $\geq \min(10, 7) = 7$
 \end{itemize}
 
-\textbf{Safety check:} $\upper{(\text{index})} = 5 < 7 = \lower{(\text{size})}$. Safe!
+\textbf{Safety check (integers):} $\upper{(\text{index})} = 5 < 7 = \lower{(\text{size})}$. Safe!
 
 Note: This particular check can also be done with standard DBM; the example
 demonstrates the mechanics, not a unique capability.
@@ -869,7 +970,7 @@ Let $n_E = 2$, $n_A = 1$. Given:
 
 Thus closure derives $EE[1,2] \leq 5$, i.e., $e_1 - e_2 \leq 5$.
 
-\subsection{Example 4: A $\to$ E $\to$ A Propagation}
+\subsection{Example 4: Mixed-to-Unary Propagation (Deriving an E Bound)}
 
 Let $n_E = 1$, $n_A = 2$. Given:
 \begin{itemize}
@@ -936,21 +1037,30 @@ Then close.
 \subsection{Safety Query}
 
 \begin{definition}[Safe Access Query]
-The query $\texttt{check\_safe\_access}(S, i, j)$ returns true iff
-$0 \leq e_i < a_j$ holds for all $\rho \in \conc(S)$:
+The query $\texttt{check\_safe\_access}(S, i, j)$ is intended to establish that
+$0 \le e_i < a_j$ holds for all $\rho \in \conc(S)$.
+
+\textbf{Real semantics (sound sufficient check):}
 \[
-\texttt{check\_safe\_access}(S, i, j) =
-\big(\lower{(e_i)} \geq 0\big) \land \big(\upper{(e_i)} < \lower{(a_j)}\big)
+\texttt{check\_safe\_access}_{\R}(S,i,j) \;=\;
+\big(\lower{(e_i)} \ge 0\big) \land \big(\upper{(e_i)} \le \lower{(a_j)}\big).
 \]
-where:
+This proves the non-strict variant $e_i \le a_j$; it is sufficient in contexts
+where equality is safe or ruled out by a separate argument.
+
+\textbf{Integer semantics (exact strict check):}
+for integer-valued variables, $e_i < a_j$ is equivalent to $e_i-a_j \le -1$, so:
+\[
+\texttt{check\_safe\_access}_{\Z}(S,i,j) \;=\;
+\big(\lower{(e_i)} \ge 0\big) \land \big(\upper{(e_i)} - \lower{(a_j)} \le -1\big).
+\]
+
+Here
 \begin{align*}
-\lower{(e_i)} &= -EE[0, i] \\
-\upper{(e_i)} &= EE[i, 0] \\
-\lower{(a_j)} &= AA[j, 0]
+\lower{(e_i)} &= -EE[0, i], &
+\upper{(e_i)} &= EE[i, 0], &
+\lower{(a_j)} &= AA[j, 0].
 \end{align*}
-The strict inequality $\upper{(e_i)} < \lower{(a_j)}$ is checked directly on
-the bounds. For integer variables, this is equivalent to
-$\upper{(e_i)} - \lower{(a_j)} \leq -1$.
 \end{definition}
 
 %==============================================================================
@@ -995,10 +1105,11 @@ but rather:
 \toprule
 \textbf{Aspect} & \textbf{Standard DBM} & \textbf{May-Must DBM} \\
 \midrule
-Lower bounds & Encoded as $0-x \leq -L$ & Direct in AA \\
+Lower bounds & Represented implicitly via $0-x \le -L$ & Stored explicitly in $AA$ \\
 Polarity & Implicit & Explicit (E vs A) \\
 Cross-class constraints & All pairs uniformly & Interval on E--A \\
-Join semantics & $\max$ on all entries & $\max$ on E, $\min$ on A \\
+Join & $\max$ on stored upper-bound entries (lower bounds via negation) &
+$\max$ on upper-bound components; $\min$ on lower-bound components \\
 \bottomrule
 \end{tabular}
 \caption{Structural comparison (not a precision claim)}
