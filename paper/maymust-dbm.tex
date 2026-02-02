@@ -30,7 +30,7 @@
 \newcommand{\abs}{\alpha}
 
 \title{The May-Must Difference-Bound Matrix Domain:\\
-A Combined Over/Under-Approximation for Relational Numerical Analysis}
+A Polarity-Aware Relational Numerical Domain}
 
 \author{Technical Report}
 \date{}
@@ -41,13 +41,15 @@ A Combined Over/Under-Approximation for Relational Numerical Analysis}
 
 \begin{abstract}
 We present the \emph{May-Must Difference-Bound Matrix} (May-Must DBM) domain,
-a numerical abstract domain that combines over-approximation and under-approximation
-in a single relational structure. The domain is designed for verification problems
-where safety depends on comparing quantities tracked with different approximation
-directions---most notably, array bounds checking where we need an upper bound on
-indices (what they \emph{could} be) and a lower bound on sizes (what they
-\emph{definitely} are). We provide complete definitions, correctness proofs,
-and worked examples.
+a polarity-aware numerical abstract domain for verification problems where
+different variables require tracking different \emph{directions} of bounds.
+The domain is a standard over-approximation (concretization is a set of
+valuations), but partitions variables into two classes: \emph{may}-variables
+where we track upper bounds on possible values, and \emph{must}-variables
+where we track lower bounds on guaranteed values. This design prevents a
+common encoding pitfall where scalar summaries of interval properties lose
+precision across joins. We provide definitions, soundness arguments,
+and worked examples motivated by memory region tracking in program verifiers.
 \end{abstract}
 
 \tableofcontents
@@ -84,7 +86,7 @@ After joining, what offsets are \emph{guaranteed} accessible? The answer is
 the \textbf{intersection}: $[0, +1] \cap [-1, 0] = [0, 0]$. Only offset 0 (the
 position $p$ itself) is guaranteed accessible in both branches.
 
-\subsection{Why Standard Domains Fail}
+\subsection{A Common Encoding Pitfall}
 
 \textbf{Attempt 1: Track ``size'' as a single variable.}
 \begin{itemize}
@@ -99,13 +101,15 @@ intersection is guaranteed.
 \textbf{Attempt 2: Track lower and upper bounds as two variables.}
 
 You could track $\mathit{lb}$ (lower bound) and $\mathit{ub}$ (upper bound)
-separately, then manually compute $[\max(\mathit{lb}_1, \mathit{lb}_2),
-\min(\mathit{ub}_1, \mathit{ub}_2)]$ at each join. This works, but:
+separately. Standard DBM/intervals will correctly compute the intersection
+at joins. This works, but:
 \begin{itemize}
-    \item It's an indirect encoding of what you actually want
-    \item You must manually implement intersection semantics
+    \item It's an indirect encoding: you wanted to track ``guaranteed reach,''
+    but you're encoding it as an interval that happens to compute correctly
+    \item If you later derive a scalar summary (e.g., ``size''), you need a
+    bespoke transformer for that derived quantity
     \item Standard over-approximation tracks \emph{both} upper and lower bounds
-    on each variable, wasting representation on bounds you don't need
+    on each variable, even when only one direction matters
 \end{itemize}
 
 \subsection{Our Solution: Polarity-Aware Constraints}
@@ -129,13 +133,13 @@ For the accessible region example, define:
 \begin{tabular}{lccc}
 & Branch 1 & Branch 2 & Join ($\min$) \\
 \midrule
-$\mathit{left\_reach}$ & 0 & 1 & 0 \\
-$\mathit{right\_reach}$ & 1 & 0 & 0 \\
+$\mathit{left\_reach} \geq$ & 0 & 1 & 0 \\
+$\mathit{right\_reach} \geq$ & 1 & 0 & 0 \\
 \end{tabular}
 \end{center}
 
-By tracking ``guaranteed reach'' directly as must-quantities, the join
-operation ($\min$) automatically computes the intersection.
+By tracking ``guaranteed reach'' (lower bounds) directly as must-quantities,
+the join operation ($\min$) automatically computes the intersection of guarantees.
 
 \subsection{Application: Array Bounds Checking}
 
@@ -179,6 +183,10 @@ difference-bound matrices that:
 Let $\Rinf = \R \cup \{-\infty, +\infty\}$ denote the extended reals with the
 usual arithmetic conventions: $x + (+\infty) = +\infty$ for $x \neq -\infty$,
 $x + (-\infty) = -\infty$ for $x \neq +\infty$, and $\min/\max$ extend naturally.
+Undefined forms such as $(+\infty) + (-\infty)$ or $(+\infty) - (+\infty)$ may
+arise in closure rule candidates; we treat any such candidate as providing no
+improvement (i.e., skip it). In floating-point implementations, this corresponds
+to ignoring NaN results.
 
 For a constraint $x - y \leq c$, we call $c$ an \emph{upper bound} on the
 difference $x - y$. For a constraint $x - y \geq c$, we call $c$ a
@@ -292,10 +300,13 @@ cannot derive $\upper{(a-e)} = -\lower{(e-a)}$.
 
 \subsection{Derived Quantities}
 
-From the mixed constraints, we can derive:
+From the mixed constraints, we can derive bounds on $a_j - e_i$ (note the
+reversed order from how we store constraints):
 \begin{align}
-\upper{(a_j - e_i)} &= -\lower{(e_i - a_j)} = -M^-[i-1, j-1] \label{eq:ae-upper}\\
-\lower{(a_j - e_i)} &= -\upper{(e_i - a_j)} = -M^+[i-1, j-1] \label{eq:ae-lower}
+\upper{(a_j - e_i)} &= -M^-[i-1, j-1]
+    & &\text{since } M^-[i{-}1,j{-}1] = \lower{(e_i - a_j)} \label{eq:ae-upper}\\
+\lower{(a_j - e_i)} &= -M^+[i-1, j-1]
+    & &\text{since } M^+[i{-}1,j{-}1] = \upper{(e_i - a_j)} \label{eq:ae-lower}
 \end{align}
 
 Unary bounds are extracted as:
@@ -323,14 +334,27 @@ M^-[i{-}1, j{-}1] \leq \rho(e_i) - \rho(a_j) \leq M^+[i{-}1, j{-}1] \}
 where $\rho(e_0) = \rho(a_0) = 0$.
 \end{definition}
 
+\textbf{Two-zero invariant:} Although closure operates on two index-distinct
+nodes $e_0$ and $a_0$, they represent the same constant 0 in concretization.
+Closure may mix paths through $e_0$ and $a_0$ precisely because $\gamma(S)$
+quantifies only over valuations with $\rho(e_0) = \rho(a_0) = 0$. Rules 9--11
+propagate constraints through this shared constant; no explicit $e_0 = a_0$
+coupling constraint is needed because concretization enforces it.
+
+\textbf{Intended reading:} $AA[j,0] = L$ means ``for all $\rho \in \gamma(S)$,
+$\rho(a_j) \geq L$.'' This makes lower bounds in $AA$ ``guaranteed'' facts
+that hold in every concrete execution the abstract state represents.
+
 \begin{definition}[Bottom]
+\label{def:bottom}
 A state $S$ is \emph{bottom} ($S = \bot$) if $\conc(S) = \emptyset$.
-This occurs when:
+For a \emph{closed} state, this is equivalent to any of:
 \begin{itemize}
     \item $\exists i.\; EE[i,i] < 0$ (impossible: $e_i - e_i < 0$)
     \item $\exists j.\; AA[j,j] > 0$ (impossible: $a_j - a_j > 0$)
     \item $\exists i,j.\; M^-[i,j] > M^+[i,j]$ (impossible: lower $>$ upper)
 \end{itemize}
+For non-closed states, inconsistency may be latent; apply closure first to detect it.
 \end{definition}
 
 \begin{definition}[Top]
@@ -348,6 +372,16 @@ Thus $\conc(\top) = \R^{n_E + n_A}$.
 \label{sec:lattice}
 %==============================================================================
 
+\begin{remark}[Closure as Normalization]
+We do not require states to be closed; closure is a normalization that preserves
+concretization ($\conc(\text{closure}(S)) = \conc(S)$). Following
+Min\'{e}~\cite{mine-thesis}, we keep closure explicit (written $S^*$ when needed)
+rather than building it into lattice operations.%
+\footnote{Implicit canonicalization after every operation can interact badly with
+widening, potentially causing divergence~\cite{mine-thesis}. We apply closure
+explicitly when needed for queries or precision, not as an invariant.}
+\end{remark}
+
 \subsection{Ordering}
 
 \begin{definition}[Ordering]
@@ -358,31 +392,63 @@ S_1 \order S_2 \quad\Longleftrightarrow\quad \conc(S_1) \subseteq \conc(S_2)
 \]
 \end{definition}
 
+\begin{lemma}[Canonical Form]
+\label{lem:canonical}
+If $S$ is closed and consistent (non-bottom), then for every pair of variables
+$(x,y)$ the entries of $S$ coincide with the optimal bounds reachable by
+repeated application of Rules 1--11: the infimum for upper bounds, the supremum
+for lower bounds. In particular, among all consistent states with the same
+concretization, the closed state is the unique entrywise-tightest one.
+\end{lemma}
+
+\begin{proof}[Proof sketch]
+This is the standard ``shortest/longest path'' property of DBM
+closure~\cite{mine-thesis}, generalized to the bipolar setting. At fixpoint,
+each entry equals the optimal bound derivable by any sequence of rule
+applications. The mixed-interval portion follows the same graph argument with
+negation-based reversal edges (\Cref{lem:unary-mixed-saturation}).
+\end{proof}
+
+\begin{remark}[Bottom states]
+For $\bot$ (where $\conc(\bot) = \emptyset$), we have $\bot \order S$ for all $S$
+trivially. The canonical form and syntactic ordering results below apply to
+consistent (non-bottom) states.
+\end{remark}
+
 \begin{proposition}[Syntactic Ordering]
 \label{prop:syn-order}
-$S_1 \order S_2$ if and only if:
+If the following entrywise conditions hold, then $S_1 \order S_2$:
 \begin{enumerate}
     \item $\forall i,j.\; EE_1[i,j] \leq EE_2[i,j]$ (tighter upper bounds)
     \item $\forall i,j.\; AA_1[i,j] \geq AA_2[i,j]$ (tighter lower bounds)
     \item $\forall i,j.\; M^+_1[i,j] \leq M^+_2[i,j]$ (tighter upper bounds)
     \item $\forall i,j.\; M^-_1[i,j] \geq M^-_2[i,j]$ (tighter lower bounds)
 \end{enumerate}
+The converse holds when both states are closed and consistent (non-bottom).
 \end{proposition}
 
 \begin{proof}
-Follows directly from the definition of $\conc$: tighter constraints (smaller
-upper bounds, larger lower bounds) admit fewer valuations.
+\textbf{(Sound direction):} Tighter constraints admit fewer valuations, so
+entrywise conditions imply $\conc(S_1) \subseteq \conc(S_2)$.
+
+\textbf{(Converse for closed, consistent states):} By \Cref{lem:canonical},
+such states store optimal bounds. If $\conc(S_1) \subseteq \conc(S_2)$, then for each
+difference $(x - y)$, the extremal feasible value in $S_1$ cannot exceed that
+in $S_2$. Since these extrema are exactly the stored entries, entrywise
+comparison follows.
 \end{proof}
 
 \subsection{Join (Least Upper Bound)}
 
 \begin{definition}[Join]
 \label{def:join}
+The \emph{raw join} is defined element-wise:
 \[
 S_1 \join S_2 = (\max(EE_1, EE_2), \min(AA_1, AA_2),
 \max(M^+_1, M^+_2), \min(M^-_1, M^-_2))
 \]
-where $\max$ and $\min$ are element-wise.
+For closed states, the \emph{canonical join} applies closure:
+$S_1 \join^* S_2 := (S_1 \join S_2)^*$.
 \end{definition}
 
 \begin{theorem}[Join Soundness]
@@ -393,33 +459,39 @@ $\conc(S_1) \cup \conc(S_2) \subseteq \conc(S_1 \join S_2)$
 \begin{proof}
 Let $\rho \in \conc(S_1)$ (the case $\rho \in \conc(S_2)$ is symmetric).
 
-For any $i,j$:
-\begin{itemize}
-    \item $\rho(e_i) - \rho(e_j) \leq EE_1[i,j] \leq \max(EE_1[i,j], EE_2[i,j])$
-    \item $\rho(a_i) - \rho(a_j) \geq AA_1[i,j] \geq \min(AA_1[i,j], AA_2[i,j])$
-    \item $\rho(e_i) - \rho(a_j) \leq M^+_1[i,j] \leq \max(M^+_1[i,j], M^+_2[i,j])$
-    \item $\rho(e_i) - \rho(a_j) \geq M^-_1[i,j] \geq \min(M^-_1[i,j], M^-_2[i,j])$
-\end{itemize}
+\textbf{EE constraints} (for $i,j \in [0, n_E]$):
+$\rho(e_i) - \rho(e_j) \leq EE_1[i,j] \leq \max(EE_1[i,j], EE_2[i,j])$.
+
+\textbf{AA constraints} (for $i,j \in [0, n_A]$):
+$\rho(a_i) - \rho(a_j) \geq AA_1[i,j] \geq \min(AA_1[i,j], AA_2[i,j])$.
+
+\textbf{Mixed constraints} (for $i \in [1, n_E]$, $j \in [1, n_A]$):
+\begin{align*}
+\rho(e_i) - \rho(a_j) &\leq M^+_1[i{-}1,j{-}1] \leq \max(M^+_1[i{-}1,j{-}1], M^+_2[i{-}1,j{-}1]) \\
+\rho(e_i) - \rho(a_j) &\geq M^-_1[i{-}1,j{-}1] \geq \min(M^-_1[i{-}1,j{-}1], M^-_2[i{-}1,j{-}1])
+\end{align*}
+
 Thus $\rho$ satisfies all constraints of $S_1 \join S_2$.
 \end{proof}
 
-\begin{theorem}[Join Is Least Upper Bound]
+\begin{theorem}[Canonical Join Is Least Upper Bound]
 \label{thm:join-lub}
-$S_1 \join S_2$ is the least upper bound of $S_1$ and $S_2$ under $\order$.
+In the poset of closed states ordered by $\order$, the canonical join
+$S_1 \join^* S_2$ is the least upper bound of $S_1$ and $S_2$.
 \end{theorem}
 
 \begin{proof}
-We must show: (1) $S_1 \order S_1 \join S_2$ and $S_2 \order S_1 \join S_2$,
-and (2) for any $T$ with $S_1 \order T$ and $S_2 \order T$, we have
-$S_1 \join S_2 \order T$.
+\textbf{Upper bound:} By \Cref{thm:join-sound}, $\conc(S_1) \cup \conc(S_2)
+\subseteq \conc(S_1 \join S_2)$. Since closure preserves concretization,
+$\conc(S_1 \join^* S_2) = \conc(S_1 \join S_2) \supseteq \conc(S_1) \cup \conc(S_2)$.
+Thus $S_1 \order S_1 \join^* S_2$ and $S_2 \order S_1 \join^* S_2$.
 
-\textbf{Part (1):} By \Cref{prop:syn-order}, $S_1 \order S_1 \join S_2$ requires
-$EE_1[i,j] \leq \max(EE_1, EE_2)[i,j]$ (immediate), and similarly for other matrices.
-
-\textbf{Part (2):} Suppose $S_1 \order T$ and $S_2 \order T$. Then for all $i,j$:
+\textbf{Least:} Suppose $T$ is closed with $S_1 \order T$ and $S_2 \order T$.
+By \Cref{prop:syn-order} (converse for closed states),
 $EE_1[i,j] \leq EE_T[i,j]$ and $EE_2[i,j] \leq EE_T[i,j]$, so
-$\max(EE_1, EE_2)[i,j] \leq EE_T[i,j]$. Similarly for other matrices (using
-$\min$ for $AA$ and $M^-$). Thus $S_1 \join S_2 \order T$.
+$\max(EE_1, EE_2)[i,j] \leq EE_T[i,j]$. Similarly for other matrices.
+Thus $S_1 \join S_2 \order T$ by the sound direction of \Cref{prop:syn-order}.
+Since closure preserves concretization, $S_1 \join^* S_2 \order T$.
 \end{proof}
 
 \begin{remark}[Semantic Significance]
@@ -443,10 +515,13 @@ has $e_1 = 5$, the join gives $e_1 \leq 5$, which also admits $e_1 = 4$.
 
 \begin{definition}[Meet]
 \label{def:meet}
+The \emph{raw meet} is defined element-wise:
 \[
 S_1 \meet S_2 = (\min(EE_1, EE_2), \max(AA_1, AA_2),
 \min(M^+_1, M^+_2), \max(M^-_1, M^-_2))
 \]
+For closed states, the \emph{canonical meet} applies closure:
+$S_1 \meet^* S_2 := (S_1 \meet S_2)^*$.
 \end{definition}
 
 \begin{theorem}[Meet Correctness]
@@ -461,71 +536,155 @@ conjunction of all constraints. For upper bounds, $\rho(e_i) - \rho(e_j) \leq c_
 $\rho(e_i) - \rho(e_j) \leq \min(c_1, c_2)$. Similarly for lower bounds with $\max$.
 \end{proof}
 
+\begin{theorem}[Canonical Meet Is Greatest Lower Bound]
+\label{thm:meet-glb}
+In the poset of closed states ordered by $\order$, the canonical meet
+$S_1 \meet^* S_2$ is the greatest lower bound of $S_1$ and $S_2$.
+\end{theorem}
+
+\begin{proof}
+\textbf{Lower bound:} By \Cref{thm:meet}, $\conc(S_1 \meet S_2) = \conc(S_1)
+\cap \conc(S_2) \subseteq \conc(S_1)$ and $\subseteq \conc(S_2)$. Since closure
+preserves concretization, $S_1 \meet^* S_2 \order S_1$ and $S_1 \meet^* S_2 \order S_2$.
+
+\textbf{Greatest:} Suppose $T$ is closed with $T \order S_1$ and $T \order S_2$.
+Then $\conc(T) \subseteq \conc(S_1) \cap \conc(S_2) = \conc(S_1 \meet S_2)
+= \conc(S_1 \meet^* S_2)$, so $T \order S_1 \meet^* S_2$.
+\end{proof}
+
 %==============================================================================
 \section{Closure}
 \label{sec:closure}
 %==============================================================================
 
-The closure operation derives all implied constraints by transitivity. A state
-is \emph{closed} if no additional constraints can be derived.
+\begin{definition}[Closure]
+\label{def:closure}
+The \emph{closure} of a state $S$ is the least fixpoint of Rules 1--11
+(\Cref{def:closure-rules}), obtained by repeatedly applying rules until no
+entry changes. A state is \emph{closed} if it equals its own closure.
+\end{definition}
+
+\begin{remark}[Graph Intuition]
+\label{rem:closure-graph}
+The closure can be \emph{understood} via a weighted bipolar graph (this is
+intuition, not an alternative definition): nodes are
+$\{e_0, \ldots, e_{n_E}, a_0, \ldots, a_{n_A}\}$, with edges carrying upper
+bounds (difference $\leq c$) or lower bounds (difference $\geq c$).
+
+\textbf{Negation-based reversal:} A lower bound on $(x-y)$ yields an upper
+bound on $(y-x)$: $\lower{(x-y)} \geq L$ implies $\upper{(y-x)} \leq -L$.
+
+\textbf{Path composition:} Bounds compose by addition along paths. Cross-polarity
+derivations first apply reversal: from $\upper{(x-y)} \leq U$ and
+$\lower{(z-y)} \geq L$, we get $\upper{(y-z)} \leq -L$, hence
+$\upper{(x-z)} \leq U - L$.
+
+This graph view provides intuition for why Rules 1--11 are sufficient:
+Rules 1--8 correspond to relaxing all length-2 paths, after optionally applying
+reversal to convert lower bounds to upper bounds (or vice versa). Rules 9--11
+handle paths through the shared constant zero.
+\end{remark}
+
+\begin{lemma}[Unary--Mixed Saturation]
+\label{lem:unary-mixed-saturation}
+After closure, unary bounds and mixed bounds are mutually consistent: Rules 9--11
+are at fixpoint. That is, no further tightening of unary bounds (in EE, AA) or
+mixed bounds (in $M^\pm$) is possible via propagation through the constant 0.
+\end{lemma}
+
+\begin{proof}
+Rules 9--11 propagate between unary and mixed entries: Rule 9 derives mixed
+bounds from unary bounds; Rules 10--11 derive unary bounds from mixed bounds.
+At fixpoint, all such derivations are saturated. Since $e_0$ and $a_0$ both
+denote 0 in concretization, this ensures the stored bounds correctly reflect
+constraints involving the shared constant.
+\end{proof}
 
 \subsection{Propagation Rules}
 
 \begin{definition}[Closure Rules]
 \label{def:closure-rules}
+\textbf{Index conventions:}
+\begin{itemize}
+    \item $EE$, $AA$: indices in $[0, n_E]$ or $[0, n_A]$, where 0 is the constant zero.
+    \item $M^+$, $M^-$: indices in $[0, n_E{-}1] \times [0, n_A{-}1]$.
+    \item When rules refer to variables $e_i$, $a_j$ (1-based), mixed matrices use
+    $M^\pm[i{-}1, j{-}1]$.
+\end{itemize}
+
+\textbf{Sign dictionary} (for deriving reversed-order bounds):
+\begin{itemize}
+    \item $EE[p,q] = \upper{(e_p - e_q)}$, hence $\lower{(e_q - e_p)} = -EE[p,q]$.
+    \item $AA[p,q] = \lower{(a_p - a_q)}$, hence $\upper{(a_q - a_p)} = -AA[p,q]$.
+\end{itemize}
+
 The closure applies the following rules until fixpoint:
 
 \textbf{1. Intra-E (Floyd-Warshall, min-plus):}
+For all $i,j,k \in [0, n_E]$:
 \[
-EE[i,j] \leftarrow \min(EE[i,j], EE[i,k] + EE[k,j]) \quad \forall k
+EE[i,j] \leftarrow \min(EE[i,j], EE[i,k] + EE[k,j])
 \]
 
 \textbf{2. Intra-A (Floyd-Warshall, max-plus):}
+For all $i,j,k \in [0, n_A]$:
 \[
-AA[i,j] \leftarrow \max(AA[i,j], AA[i,k] + AA[k,j]) \quad \forall k
+AA[i,j] \leftarrow \max(AA[i,j], AA[i,k] + AA[k,j])
 \]
 
 \textbf{3. Mixed upper via E:}
+For all $i \in [0, n_E{-}1]$, $j \in [0, n_A{-}1]$, $k \in [0, n_E{-}1]$
+(here $i,k$ are 0-based indices for variables $e_{i+1}, e_{k+1}$):
 \[
-M^+[i,j] \leftarrow \min(M^+[i,j], EE[i+1, k+1] + M^+[k,j]) \quad \forall k \in [0, n_E{-}1]
+M^+[i,j] \leftarrow \min(M^+[i,j], EE[i+1, k+1] + M^+[k,j])
 \]
 
 \textbf{4. Mixed upper via A:}
+For all $i \in [0, n_E{-}1]$, $j \in [0, n_A{-}1]$, $k \in [0, n_A{-}1]$:
 \[
-M^+[i,j] \leftarrow \min(M^+[i,j], M^+[i,k] + (-AA[j+1, k+1])) \quad \forall k \in [0, n_A{-}1]
+M^+[i,j] \leftarrow \min(M^+[i,j], M^+[i,k] + (-AA[j+1, k+1]))
 \]
 where $-AA[j+1, k+1] = \upper{(a_{k+1} - a_{j+1})}$.
 
 \textbf{5. Mixed lower via E:}
+For all $i \in [0, n_E{-}1]$, $j \in [0, n_A{-}1]$, $k \in [0, n_E{-}1]$:
 \[
-M^-[i,j] \leftarrow \max(M^-[i,j], (-EE[k+1, i+1]) + M^-[k,j]) \quad \forall k \in [0, n_E{-}1]
+M^-[i,j] \leftarrow \max(M^-[i,j], (-EE[k+1, i+1]) + M^-[k,j])
 \]
 where $-EE[k+1, i+1] = \lower{(e_{i+1} - e_{k+1})}$.
 
 \textbf{6. Mixed lower via A:}
+For all $i \in [0, n_E{-}1]$, $j \in [0, n_A{-}1]$, $k \in [0, n_A{-}1]$:
 \[
-M^-[i,j] \leftarrow \max(M^-[i,j], M^-[i,k] + AA[k+1, j+1]) \quad \forall k \in [0, n_A{-}1]
+M^-[i,j] \leftarrow \max(M^-[i,j], M^-[i,k] + AA[k+1, j+1])
 \]
 
 \textbf{7. E via Mixed (E $\to$ A $\to$ E):}
+For all $i,j \in [1, n_E]$, $k \in [0, n_A{-}1]$:
 \[
-EE[i,j] \leftarrow \min(EE[i,j], M^+[i-1, k] + (-M^-[j-1, k])) \quad \forall k \in [0, n_A{-}1]
+EE[i,j] \leftarrow \min(EE[i,j], M^+[i-1, k] + (-M^-[j-1, k]))
 \]
 This derives $\upper{(e_i - e_j)} \leq \upper{(e_i - a_{k+1})} + \upper{(a_{k+1} - e_j)}$.
 
 \textbf{8. A via Mixed (A $\to$ E $\to$ A):}
+For all $i,j \in [1, n_A]$, $k \in [0, n_E{-}1]$:
 \[
-AA[i,j] \leftarrow \max(AA[i,j], (-M^+[k, i-1]) + M^-[k, j-1]) \quad \forall k \in [0, n_E{-}1]
+AA[i,j] \leftarrow \max(AA[i,j], (-M^+[k, i-1]) + M^-[k, j-1])
 \]
 This derives $\lower{(a_i - a_j)} \geq \lower{(a_i - e_{k+1})} + \lower{(e_{k+1} - a_j)}$.
 
 \textbf{9. Unary-Mixed Propagation:}
+For all $i \in [0, n_E{-}1]$, $j \in [0, n_A{-}1]$:
+
+\emph{Semantics:} This derives $\upper{(e_{i+1} - a_{j+1})} \leq \upper{(e_{i+1})} - \lower{(a_{j+1})}$
+and $\lower{(e_{i+1} - a_{j+1})} \geq \lower{(e_{i+1})} - \upper{(a_{j+1})}$.
 \begin{align*}
 M^+[i,j] &\leftarrow \min(M^+[i,j], EE[i+1, 0] - AA[j+1, 0]) \\
 M^-[i,j] &\leftarrow \max(M^-[i,j], (-EE[0, i+1]) - (-AA[0, j+1]))
 \end{align*}
 
 \textbf{10. Mixed-Unary Propagation (E bounds from Mixed and A):}
+For all $i \in [1, n_E]$, $j \in [1, n_A]$:
 \begin{align*}
 \upper{(e_i)} &\leq \upper{(e_i - a_j)} + \upper{(a_j)}: &
 EE[i, 0] &\leftarrow \min(EE[i, 0], M^+[i-1, j-1] + (-AA[0, j])) \\
@@ -534,64 +693,107 @@ EE[0, i] &\leftarrow \min(EE[0, i], -(M^-[i-1, j-1] + AA[j, 0]))
 \end{align*}
 
 \textbf{11. Mixed-Unary Propagation (A bounds from Mixed and E):}
+For all $i \in [1, n_E]$, $j \in [1, n_A]$:
 \begin{align*}
 \lower{(a_j)} &\geq \lower{(e_i)} - \upper{(e_i - a_j)}: &
 AA[j, 0] &\leftarrow \max(AA[j, 0], (-EE[0, i]) - M^+[i-1, j-1]) \\
 \upper{(a_j)} &\leq \upper{(e_i)} - \lower{(e_i - a_j)}: &
-AA[0, j] &\leftarrow \min(AA[0, j], -(EE[i, 0] - M^-[i-1, j-1]))
+AA[0, j] &\leftarrow \max(AA[0, j], -(EE[i, 0] - M^-[i-1, j-1]))
 \end{align*}
+Note: both lines use $\max$ because $AA$ stores \emph{lower} bounds. Recall
+$AA[0,j] = \lower{(a_0 - a_j)} = \lower{(-a_j)} = -\upper{(a_j)}$. The second
+line derives $\upper{(a_j)} \leq \text{bound}$, equivalently
+$-\upper{(a_j)} \geq -\text{bound}$, i.e., $AA[0,j] \geq \text{RHS}$.
 \end{definition}
 
 \subsection{Correctness of Closure}
 
-\begin{theorem}[Closure Soundness]
+\textbf{Reversal principle:} Throughout these proofs, we use the fact that a
+stored lower bound implies a reversed upper bound: if $\lower{(x-y)} \geq L$
+then $\upper{(y-x)} \leq -L$. This lets us derive upper bounds from lower-bound
+entries and vice versa, even though they are not explicitly stored.
+
+\begin{lemma}[Single-Step Preservation]
+\label{lem:closure-step}
+Let $S'$ be obtained from $S$ by applying one update of one rule (Rules 1--11)
+to one entry. Then $\conc(S') = \conc(S)$.
+\end{lemma}
+
+\begin{proof}
+Each rule replaces an entry by $\min(\text{old}, \text{candidate})$ for an upper
+bound or $\max(\text{old}, \text{candidate})$ for a lower bound. Crucially, the
+candidate is a \emph{semantic consequence of $S$}: for every $\rho \in \conc(S)$,
+the candidate bound holds. This follows from the triangle inequality
+$(x - z) = (x - y) + (y - z)$ applied to entries already in $S$ (with
+negation-based reversal for cross-polarity cases). Therefore:
+\begin{itemize}
+    \item Every $\rho \in \conc(S)$ satisfies the candidate, so $\rho$ satisfies
+    the tightened constraint, hence $\conc(S) \subseteq \conc(S')$.
+    \item The new constraint is at least as tight as the old, so
+    $\conc(S') \subseteq \conc(S)$.
+\end{itemize}
+We verify that each rule's candidate is a semantic consequence of $S$:
+
+\textbf{Rules 1--2 (Intra-class):} Standard Floyd-Warshall transitivity within
+EE (min-plus) and AA (max-plus).
+
+\textbf{Rules 3--4 (Mixed upper):} Derive $\upper{(e_i - a_j)}$ via E or A
+intermediates using $\upper{(x-z)} \leq \upper{(x-y)} + \upper{(y-z)}$.
+
+\textbf{Rules 5--6 (Mixed lower):} Derive $\lower{(e_i - a_j)}$ via E or A
+intermediates using $\lower{(x-z)} \geq \lower{(x-y)} + \lower{(y-z)}$.
+
+\textbf{Rules 9--11 (Unary):} Specialize the above to/from the constant 0.
+
+\textbf{Rules 7--8 (Cross-polarity):} These mix upper and lower bounds via
+negation-based reversal. For Rule 7, with $\rho \in \conc(S)$, $i,j \in [1, n_E]$,
+$k \in [0, n_A{-}1]$ (intermediate $a_{k+1}$):
+\begin{align*}
+\rho(e_i) - \rho(e_j) &= (\rho(e_i) - \rho(a_{k+1})) + (\rho(a_{k+1}) - \rho(e_j)) \\
+&\leq M^+[i-1, k] + (-M^-[j-1, k])
+\end{align*}
+using $\rho(e_i) - \rho(a_{k+1}) \leq M^+[i-1, k]$ and
+$\rho(a_{k+1}) - \rho(e_j) \leq -M^-[j-1, k]$ (from
+$\rho(e_j) - \rho(a_{k+1}) \geq M^-[j-1, k]$). Rule 8 is symmetric.
+\end{proof}
+
+\begin{theorem}[Closure Preserves Concretization]
 \label{thm:closure-sound}
 For any state $S$, $\conc(\text{closure}(S)) = \conc(S)$.
 \end{theorem}
 
 \begin{proof}
-Each propagation rule derives a constraint that is logically implied by existing
-constraints. We verify the key rules:
-
-\textbf{Rule 7 (E via Mixed):}
-For any $\rho \in \conc(S)$ and any intermediate $a_{k+1}$:
-\begin{align*}
-\rho(e_i) - \rho(e_j) &= (\rho(e_i) - \rho(a_{k+1})) + (\rho(a_{k+1}) - \rho(e_j)) \\
-&\leq M^+[i-1, k] + (-M^-[j-1, k])
-\end{align*}
-The last step uses $\rho(e_i) - \rho(a_{k+1}) \leq M^+[i-1, k]$ and
-$\rho(a_{k+1}) - \rho(e_j) \leq -M^-[j-1, k]$ (derived from
-$\rho(e_j) - \rho(a_{k+1}) \geq M^-[j-1, k]$).
-
-\textbf{Rule 8 (A via Mixed):}
-Similarly, for any intermediate $e_{k+1}$:
-\begin{align*}
-\rho(a_i) - \rho(a_j) &= (\rho(a_i) - \rho(e_{k+1})) + (\rho(e_{k+1}) - \rho(a_j)) \\
-&\geq (-M^+[k, i-1]) + M^-[k, j-1]
-\end{align*}
+Closure is a sequence of single-step rule applications. By
+\Cref{lem:closure-step}, each step preserves $\conc$. Hence the entire
+iteration preserves $\conc$, and equality holds at fixpoint.
 \end{proof}
 
-\begin{theorem}[Closure Termination and Complexity]
-\label{thm:closure-term}
-The closure algorithm terminates. With finite precision arithmetic, the
-time complexity is $O((n_E + n_A)^3)$.
-\end{theorem}
+\begin{remark}[Closure Complexity]
+\label{rem:closure-complexity}
+The fixpoint of Rules 1--11 can be computed in $O(n^3)$ time, where
+$n = n_E + n_A + 2$, by adapting Floyd-Warshall. The closure reduces to
+shortest paths (for upper bounds) and longest paths (for lower bounds) on a
+signed graph with $n$ nodes. See \cite{mine-thesis} for the general
+DBM-to-shortest-paths reduction.
+\end{remark}
 
-\begin{proof}
-\textbf{Termination:} Each rule is monotonic in the appropriate direction:
-$EE$ and $M^+$ entries can only decrease (min operations), while $AA$ and
-$M^-$ entries can only increase (max operations). With finite-precision
-arithmetic (e.g., floating point), there are finitely many distinct values,
-so the algorithm must terminate.
+\begin{remark}[Implementation]
+The reference implementation uses iterative fixpoint computation (apply rules
+until no change) rather than the structured Floyd-Warshall order. Since the
+rule-application operator is monotone in the product lattice order, iteration
+to stability yields the least fixpoint of Rules 1--11, which coincides with
+the path-closure semantics in exact arithmetic. Complexity may differ from the
+$O(n^3)$ Floyd-Warshall bound. With finite-precision arithmetic (floats),
+termination is guaranteed because each entry changes monotonically and has
+finitely many representable values. See \Cref{sec:impl}.
+\end{remark}
 
-\textbf{Complexity:} The algorithm generalizes Floyd-Warshall to a bipolar
-constraint system. Let $n = n_E + n_A$. Each Floyd-Warshall pass (Rules 1--2)
-is $O(n^3)$. The cross-propagation rules (3--11) each iterate over $O(n^2)$
-pairs with $O(n)$ intermediate variables, giving $O(n^3)$ per pass. The number
-of passes is bounded by the lattice height, which for finite precision is
-$O(n^2 \cdot B)$ where $B$ bounds the number of distinct values per entry.
-In practice, convergence is fast (typically 2--3 passes).
-\end{proof}
+\begin{remark}[Bottom Detection]
+Closure can create inconsistency (e.g., Rule 2 may push $AA[j,j]$ above 0 via
+a positive cycle of lower bounds). After closure, check the bottom conditions
+from \Cref{def:bottom}: if $EE[i,i] < 0$, $AA[j,j] > 0$, or $M^-[i,j] > M^+[i,j]$
+for any indices, return $\bot$.
+\end{remark}
 
 %==============================================================================
 \section{Worked Examples}
@@ -601,18 +803,23 @@ In practice, convergence is fast (typically 2--3 passes).
 \subsection{Example 1: Accessible Region Intersection}
 
 Consider the motivating example from \Cref{sec:intro}: tracking guaranteed
-accessible offsets around a pointer. We use $n_E = 0$ (no may-variables) and
-$n_A = 2$ (left\_reach $a_1$, right\_reach $a_2$).
+accessible offsets around a pointer $p$. We represent the guaranteed accessible
+interval $[p - \ell, p + r]$ by non-negative distances $\ell$ (left reach) and
+$r$ (right reach).
 
-\textbf{Branch 1:} Accessible offsets $[0, +1]$ means left\_reach $= 0$,
-right\_reach $= 1$.
+We use $n_E = 0$ (no may-variables) and $n_A = 2$ ($a_1 = \text{left\_reach}$,
+$a_2 = \text{right\_reach}$). We track \emph{guaranteed} reach, so all
+constraints are lower bounds ($\geq$).
+
+\textbf{Branch 1:} Accessible offsets $[p+0, p+1]$ means left\_reach $\geq 0$,
+right\_reach $\geq 1$.
 \[
 AA_1 = \begin{pmatrix} 0 & -\infty & -\infty \\ 0 & 0 & -\infty \\ 1 & -\infty & 0 \end{pmatrix}
 \]
 (Reading: $AA[1,0] = 0$ means $a_1 \geq 0$; $AA[2,0] = 1$ means $a_2 \geq 1$.)
 
-\textbf{Branch 2:} Accessible offsets $[-1, 0]$ means left\_reach $= 1$,
-right\_reach $= 0$.
+\textbf{Branch 2:} Accessible offsets $[p-1, p+0]$ means left\_reach $\geq 1$,
+right\_reach $\geq 0$.
 \[
 AA_2 = \begin{pmatrix} 0 & -\infty & -\infty \\ 1 & 0 & -\infty \\ 0 & -\infty & 0 \end{pmatrix}
 \]
@@ -623,9 +830,9 @@ AA = \min(AA_1, AA_2) = \begin{pmatrix} 0 & -\infty & -\infty \\ 0 & 0 & -\infty
 \]
 
 Result: $a_1 \geq 0$ (left\_reach), $a_2 \geq 0$ (right\_reach). The guaranteed
-accessible region is $[0, 0]$---only the pointer position itself. This is the
-\emph{intersection} of $[0, +1]$ and $[-1, 0]$, computed automatically by the
-join semantics.
+accessible region after join is $[0, 0]$---only the pointer position itself.
+This is the \emph{intersection} of the two branch guarantees, computed
+automatically by the join semantics.
 
 \subsection{Example 2: Array Bounds (Safety Check)}
 
@@ -642,7 +849,10 @@ With $n_E = 1$ (index) and $n_A = 1$ (size):
 
 \textbf{Safety check:} $\upper{(\text{index})} = 5 < 7 = \lower{(\text{size})}$. Safe!
 
-\subsection{Example 2: E $\to$ A $\to$ E Propagation}
+Note: This particular check can also be done with standard DBM; the example
+demonstrates the mechanics, not a unique capability.
+
+\subsection{Example 3: E $\to$ A $\to$ E Propagation}
 
 Let $n_E = 2$, $n_A = 1$. Given:
 \begin{itemize}
@@ -659,7 +869,7 @@ Let $n_E = 2$, $n_A = 1$. Given:
 
 Thus closure derives $EE[1,2] \leq 5$, i.e., $e_1 - e_2 \leq 5$.
 
-\subsection{Example 3: A $\to$ E $\to$ A Propagation}
+\subsection{Example 4: A $\to$ E $\to$ A Propagation}
 
 Let $n_E = 1$, $n_A = 2$. Given:
 \begin{itemize}
@@ -688,6 +898,7 @@ For $e_i := [L, U]$ (non-deterministic assignment to interval):
 \begin{enumerate}
     \item \textbf{Forget:} Set $EE[i, j] = EE[j, i] = +\infty$ for all $j \neq i$,
     and $M^+[i-1, \cdot] = +\infty$, $M^-[i-1, \cdot] = -\infty$.
+    (Keep $EE[i,i] = 0$ unchanged.)
 
     \item \textbf{Set bounds:} $EE[i, 0] = U$ (upper), $EE[0, i] = -L$ (lower).
 
@@ -701,6 +912,7 @@ For $a_j := [L, U]$:
 \begin{enumerate}
     \item \textbf{Forget:} Set $AA[j, k] = AA[k, j] = -\infty$ for all $k \neq j$,
     and $M^+[\cdot, j-1] = +\infty$, $M^-[\cdot, j-1] = -\infty$.
+    (Keep $AA[j,j] = 0$ unchanged.)
 
     \item \textbf{Set bounds:} $AA[j, 0] = L$ (lower), $AA[0, j] = -U$ (upper).
 
@@ -746,26 +958,58 @@ $\upper{(e_i)} - \lower{(a_j)} \leq -1$.
 \label{sec:comparison}
 %==============================================================================
 
+\subsection{What Standard DBM Can Do}
+
+Standard DBM \emph{can} represent lower bounds: the constraint $x \geq L$ is
+encoded as $0 - x \leq -L$. After a join, lower bounds are preserved correctly
+(the join takes $\max$ on upper bounds of $0-x$, which corresponds to $\min$
+on lower bounds of $x$). So for simple array bounds checking with explicit
+size variables, standard DBM suffices.
+
+\subsection{What May-Must DBM Provides}
+
+The value of May-Must DBM is not that it can express facts standard DBM cannot,
+but rather:
+
+\begin{enumerate}
+    \item \textbf{Explicit polarity}: Variables are classified by which bound
+    direction matters. This makes the analysis design clearer and avoids
+    tracking bounds that are irrelevant to the verification goal.
+
+    \item \textbf{Natural intersection semantics}: For ``guaranteed reach''
+    properties (as in \Cref{sec:intro}), the join on A-variables directly
+    computes the intersection. With standard DBM, you would encode left/right
+    reach as two variables and get the same result, but the may-must framing
+    makes the intent explicit.
+
+    \item \textbf{Structured cross-class propagation}: The interval constraints
+    $M^+$ and $M^-$ on E--A differences enable systematic E$\to$A$\to$E and
+    A$\to$E$\to$A propagation. In standard DBM with all variables in one pool,
+    similar propagation occurs, but the polarity-aware structure here makes it
+    easier to reason about which bounds tighten which.
+\end{enumerate}
+
 \begin{table}[h]
 \centering
 \begin{tabular}{lcc}
 \toprule
-\textbf{Property} & \textbf{Standard DBM} & \textbf{May-Must DBM} \\
+\textbf{Aspect} & \textbf{Standard DBM} & \textbf{May-Must DBM} \\
 \midrule
-Approximation & Over only & Over (E) + Under (A) \\
-Join on size & $\max$ (useless for safety) & $\min$ (preserves guarantee) \\
-E $\to$ A $\to$ E & Not possible & Via $M^+$ and $M^-$ \\
-Array bounds query & Imprecise & Precise \\
+Lower bounds & Encoded as $0-x \leq -L$ & Direct in AA \\
+Polarity & Implicit & Explicit (E vs A) \\
+Cross-class constraints & All pairs uniformly & Interval on E--A \\
+Join semantics & $\max$ on all entries & $\max$ on E, $\min$ on A \\
 \bottomrule
 \end{tabular}
-\caption{Comparison of Standard DBM vs.\ May-Must DBM}
+\caption{Structural comparison (not a precision claim)}
 \label{tab:comparison}
 \end{table}
 
-\textbf{Key insight:} Standard DBM cannot verify $\mathit{index} < \mathit{size}$
-after joining branches with different sizes, because join takes $\max$ on all
-bounds. May-Must DBM's join takes $\min$ on size lower bounds, preserving the
-weakest guarantee---which is exactly what safety verification needs.
+\textbf{Summary}: May-Must DBM is a \emph{design choice} that makes polarity
+explicit, not a strict precision improvement over standard DBM. Its value is
+in clarity of intent and structured propagation for analyses where some
+variables represent ``could be'' bounds and others represent ``guaranteed''
+bounds.
 
 %==============================================================================
 \section{Limitations}
@@ -774,9 +1018,12 @@ weakest guarantee---which is exactly what safety verification needs.
 
 \begin{enumerate}
     \item \textbf{Fixed variable classification:} Variables must be assigned to
-    E or A at analysis design time. A variable cannot be both over- and
-    under-approximated simultaneously. This requires knowing at analysis design
-    time which properties matter for each variable.
+    E or A at analysis design time. A variable cannot simultaneously be treated
+    as ``may'' and ``must'' in this factoring; if you need both tight upper
+    \emph{and} tight guaranteed-lower information about the same quantity, you
+    must model it using two related variables or keep it in the unified DBM
+    pool. This requires knowing at analysis design time which bound direction
+    matters for each variable.
 
     \item \textbf{No strict inequalities (real-valued):} The domain tracks
     $\leq$ and $\geq$, not $<$ and $>$, when variables range over reals.
@@ -807,17 +1054,28 @@ weakest guarantee---which is exactly what safety verification needs.
 \label{sec:conclusion}
 %==============================================================================
 
-The May-Must DBM domain provides a principled way to combine over-approximation
-and under-approximation in a single relational numerical domain. The key
-contribution is recognizing that different program properties require different
-approximation directions, and designing lattice operations (especially join)
-that preserve both.
+The May-Must DBM domain provides a polarity-aware design for relational
+numerical analysis. While expressively equivalent to standard DBM (which can
+also represent lower bounds via negation), the may-must structure offers
+several practical advantages:
 
-The domain is particularly suited for array bounds verification, where we need
-upper bounds on indices and lower bounds on sizes. After control flow joins,
-the domain correctly maintains the weakest size guarantee rather than the
-strongest possible size---a crucial semantic distinction that standard
-over-approximating domains cannot make.
+\begin{itemize}
+    \item \textbf{Explicit intent}: Variables are classified by which bound
+    direction matters, making the analysis design self-documenting.
+
+    \item \textbf{Pitfall prevention}: The common mistake of tracking
+    ``guaranteed regions'' with scalar summaries that lose precision at joins
+    is structurally avoided.
+
+    \item \textbf{Natural intersection semantics}: For must-variables
+    representing guaranteed properties (like accessible memory regions), the
+    join automatically computes the intersection of guarantees.
+\end{itemize}
+
+The domain is particularly suited for verification tasks mixing ``possible
+value'' bounds (indices, offsets) with ``guaranteed minimum'' bounds (sizes,
+capacities, reaches). The polarity-aware design makes it harder to accidentally
+compute the wrong join for guarantee-style facts.
 
 \appendix
 
