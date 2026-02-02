@@ -218,13 +218,18 @@ def test_E1_mixed_guards_give_one_sided_equality():
     assert any(r["e1"] == r["a1"] for r in G)
 
 
-def test_E2_contradictory_mixed_guards_bottom():
-    # Choose bounds that violate cross-band consistency: EA < -AE => ⊥
+def test_E2_mixed_guards_tightening():
+    """
+    Test that redundant mixed guards get tightened but don't cause bottom.
+    EA and AE both constrain e - a from above, so they can't contradict.
+    """
     st = top_state(1, 1)
     st = T.guard_ea_le(st, i=1, j=1, c=-3)  # e - a ≤ -3
-    st = T.guard_ae_ge(st, j=1, i=1, c=2)  # a - e ≥ 2  => -AE = -2
-    # Now EA (-3) < -AE (-2) => bottom
-    assert D.is_bottom(st)
+    st = T.guard_ae_ge(st, j=1, i=1, c=2)  # a - e ≥ 2, i.e., e - a ≤ -2
+    # Both constraints are satisfiable: e.g., e=0, a=4 gives e-a=-4
+    assert not D.is_bottom(st)
+    # After tightening: AE should be at least -EA = 3
+    assert st.AE[0, 0] >= 3
 
 
 # -------------------
@@ -330,11 +335,70 @@ def test_H2_two_stage_init_with_correlation():
 
 
 # ---------------------------------------
-# I. Expected approximation-loss scenarios
+# I. May-Must vs Standard DBM: The Key Difference
 # ---------------------------------------
 
 
-def test_I1_join_on_must_loses_stronger_branch():
+def test_I0_may_must_semantics_for_bounds_checking():
+    """
+    Demonstrates why may-must DBM is fundamentally different from standard DBM
+    for array bounds checking.
+
+    Scenario: Two branches initialize different amounts of an array.
+    - Branch 1: initializes 10 elements (size ≥ 10)
+    - Branch 2: initializes 7 elements (size ≥ 7)
+
+    For SAFETY checking (can we access index i?), we need the MINIMUM guaranteed
+    size after join, not the maximum possible size.
+
+    May-must DBM (under-approximation for must):
+      - After join: size ≥ min(10, 7) = 7 (definitely at least 7)
+      - Safe to access indices 0..6
+
+    Standard DBM (over-approximation for everything):
+      - Would track: size could be up to max(10, 7) = 10
+      - This is useless for safety! "Could be up to 10" doesn't guarantee anything.
+
+    The key insight: for array bounds, we care about:
+      - Upper bound of index (may): what the index COULD be (over-approx)
+      - Lower bound of size (must): what the size DEFINITELY is (under-approx)
+    """
+    # Simulate: two branches initialize different amounts
+    # Branch 1: size ≥ 10, index ≤ 5
+    b1 = top_state(1, 1)
+    b1 = T.assign_a_interval(b1, j=1, L=10, U=10**6)  # a_size ≥ 10
+    b1 = T.assign_e_interval(b1, i=1, L=0, U=5)       # e_index ≤ 5
+
+    # Branch 2: size ≥ 7, index ≤ 3
+    b2 = top_state(1, 1)
+    b2 = T.assign_a_interval(b2, j=1, L=7, U=10**6)   # a_size ≥ 7
+    b2 = T.assign_e_interval(b2, i=1, L=0, U=3)       # e_index ≤ 3
+
+    # Join the branches
+    sj = D.closure(D.join(b1, b2))
+
+    # Check the semantics:
+    # - Must (a_size) takes MIN: min(10, 7) = 7 (under-approximation)
+    # - May (e_index) takes MAX for upper bound: max(5, 3) = 5 (over-approximation)
+    assert sj.AA[1, 0] == 7   # a_size ≥ 7 (the weaker guarantee survives)
+    assert sj.EE[1, 0] == 5   # e_index ≤ 5 (the weaker bound survives)
+
+    # The critical safety check: index < size
+    # With e_index ≤ 5 and a_size ≥ 7, we have e_index - a_size ≤ 5 - 7 = -2 < 0
+    # So the access is SAFE!
+    G = D.gamma_enumerate(sj, e_vals=[0, 1, 2, 3, 4, 5], a_vals=[7, 8, 9, 10])
+    assert all(r["e1"] < r["a1"] for r in G)  # index < size for all concrete states
+
+    # This is what makes may-must useful: after join, we STILL know index < size
+    # Standard DBM would tell us "size could be up to 10" which doesn't help safety!
+
+
+# ---------------------------------------
+# J. Expected approximation-loss scenarios
+# ---------------------------------------
+
+
+def test_J1_join_on_must_loses_stronger_branch():
     # if * then a1 ≥ 5 else a1 ≥ 7  => post-join only guarantees a1 ≥ 5
     base = top_state(0, 1)
     b1 = T.assign_a_interval(base, j=1, L=5, U=10**6)

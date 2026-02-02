@@ -269,14 +269,26 @@ def test_lattice_meet_join_monotonicity(api_guard, sizes, grid_vals):
 # --------------------------
 
 
-def test_bottom_via_cross_inconsistency(api_guard, sizes):
+def test_cross_band_consistency_tightening(api_guard, sizes):
+    """
+    Test that cross-band consistency tightens EA and AE to be mutually consistent.
+    EA[i,j] ≤ -AE[j,i] and AE[j,i] ≥ -EA[i,j] after closure.
+
+    Note: EA and AE both constrain the same e-a relationship from opposite
+    directions, so they can't directly contradict - they just provide
+    redundant bounds that get tightened.
+    """
     nE, nA = sizes
     EE, AA, EA, AE = build_zero_closed(nE, nA)
     if nE >= 1 and nA >= 1:
-        EA[0][0] = -1
-        AE[0][0] = -2  # EA=-1, -AE=2 => EA < -AE => inconsistent
+        EA[0][0] = -1  # e1 - a1 ≤ -1
+        AE[0][0] = -2  # a1 - e1 ≥ -2 (i.e., e1 - a1 ≤ 2)
     st = D.closure(D.make_state(EE, AA, EA, AE))
-    assert D.is_bottom(st)
+    # State is consistent - both constraints satisfied by e1 - a1 = -1
+    assert not D.is_bottom(st)
+    # After closure, AE should be tightened: AE[0,0] ≥ -EA[0,0] = 1
+    if nE >= 1 and nA >= 1:
+        assert st.AE[0, 0] >= 1  # Tightened from -2 to 1
 
 
 # --------------------------

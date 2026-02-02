@@ -240,6 +240,22 @@ def closure(state: State) -> State:
                     AE[i, j] = best
                     changed = True
 
+        # Cross-band consistency: EA and AE constrain the same e-a relationship
+        # from opposite directions. If e - a ≤ c (EA) and a - e ≥ d (AE),
+        # then e - a ≤ -d, so EA[i,j] ≤ -AE[j,i].
+        for i in range(nE):
+            for j in range(nA):
+                # EA[i,j] ≤ -AE[j,i]
+                neg_ae = -AE[j, i]
+                if neg_ae < EA[i, j]:
+                    EA[i, j] = neg_ae
+                    changed = True
+                # AE[j,i] ≥ -EA[i,j]
+                neg_ea = -EA[i, j]
+                if neg_ea > AE[j, i]:
+                    AE[j, i] = neg_ea
+                    changed = True
+
         # Unary propagation (both directions)
         # From unaries to mixed
         for i in range(nE):
@@ -569,18 +585,19 @@ def is_bottom(state: State) -> bool:
     Inconsistency after closure if:
       - EE has a negative cycle: EE[ii] < 0
       - AA has a positive cycle: AA[ii] > 0
-      - Cross-band contradiction: EA[i,j] < -AE[j,i]
+
+    Note: Cross-band constraints (EA/AE) cannot directly contradict each other
+    since they both bound e-a from above (directly or via negation). Any actual
+    inconsistency involving mixed constraints will propagate to EE/AA diagonals
+    through the closure rules.
     """
     st = closure(state)
-    EE, AA, EA, AE = get_blocks(st)
+    EE, AA, _, _ = get_blocks(st)
 
     if np.any(np.diag(EE) < 0):
         return True
     if np.any(np.diag(AA) > 0):
         return True
-    if EA.size and AE.size:
-        if np.any(EA < (-AE.T)):
-            return True
     return False
 
 

@@ -158,14 +158,22 @@ def test_guard_mixed_filters(grid_vals):
 # -------------------------
 
 
-def test_conflicting_mixed_guards_bottom():
+def test_mixed_guards_tightening():
+    """
+    Test that redundant mixed guards get tightened via cross-band consistency.
+    EA and AE constrain the same e-a relationship, so after closure they
+    should satisfy EA[i,j] ≤ -AE[j,i].
+    """
     nE, nA = 1, 1
     EE, AA, EA, AE = build_zero_closed(nE, nA)
     st0 = D.closure(D.make_state(EE, AA, EA, AE))
 
-    st = T.guard_ea_le(st0, i=1, j=1, c=-3)
-    st = T.guard_ae_ge(st, j=1, i=1, c=2)
-    assert D.is_bottom(st)
+    st = T.guard_ea_le(st0, i=1, j=1, c=-3)  # e - a ≤ -3
+    st = T.guard_ae_ge(st, j=1, i=1, c=2)    # a - e ≥ 2, i.e., e - a ≤ -2
+    # Not bottom - constraints are satisfiable (e.g., e=0, a=4)
+    assert not D.is_bottom(st)
+    # After tightening: AE[0,0] ≥ -EA[0,0] = 3
+    assert st.AE[0, 0] >= 3
 
 
 # -------------------------
