@@ -1,35 +1,46 @@
 """
-Example Programs: Demonstrating May-Must DBM for Array Bounds Verification
+Example Programs: Demonstrating the May-Must DBM Domain
 
 This file provides concrete examples showing why the May-Must DBM domain is
-valuable for verifying array bounds safety. These examples would be difficult
-or impossible to verify precisely with a standard (single-approximation) DBM.
+valuable. The key use case is tracking GUARANTEED PROPERTIES (like accessible
+memory regions) that require INTERSECTION semantics at joins.
 
-THE CORE INSIGHT
+THE CORE PROBLEM
 ================
-For array bounds checking, we need two DIFFERENT approximations:
+Consider tracking an interval around a pointer where memory has some property
+(e.g., contains numeric values). After a branch:
 
-    0 <= index < size
+    Branch 1: accessible offsets [0, +1]
+    Branch 2: accessible offsets [-1, 0]
+    After join: guaranteed accessible = INTERSECTION = [0, 0]
 
-1. For `index`, we need an UPPER bound (over-approximation):
-   "The index could be at most X" - if X < size, access is safe.
+A single "size" variable CANNOT capture this - both branches have size 2,
+but the guaranteed overlap is only 1 position. You need to track the interval
+endpoints and compute their intersection.
 
-2. For `size`, we need a LOWER bound (under-approximation):
-   "The size is definitely at least Y" - if index < Y, access is safe.
+WHY MAY-MUST DBM HELPS
+======================
+Instead of encoding [lb, ub] with two variables and manual intersection logic,
+track "guaranteed reach" directly as A-variables:
 
-Standard DBM tracks everything with the same approximation direction.
-After a join, you get "size could be at most max(a, b)" which is useless
-for safety. May-Must DBM tracks "size is definitely at least min(a, b)".
+    left_reach:  how far left is guaranteed (A-variable)
+    right_reach: how far right is guaranteed (A-variable)
+
+Join takes MIN on A-variables, automatically computing intersection:
+
+    Branch 1: left_reach=0, right_reach=1
+    Branch 2: left_reach=1, right_reach=0
+    Join:     left_reach=0, right_reach=0  (correct!)
 
 DOMAIN STRUCTURE
 ================
-- E variables (may): Track what values COULD exist (over-approximation)
-  - Useful for: index bounds, pointer offsets, loop counters
-  - Join takes MAX of upper bounds (loosens constraint)
+- E variables (may): Track UPPER bounds on possible values
+  - Useful for: indices, offsets, loop counters
+  - Join takes MAX (loosens "could be at most")
 
-- A variables (must): Track what values DEFINITELY exist (under-approximation)
-  - Useful for: array sizes, buffer capacities, resource counts
-  - Join takes MIN of lower bounds (loosens guarantee)
+- A variables (must): Track LOWER bounds on guaranteed values
+  - Useful for: guaranteed reach, minimum sizes, capacities
+  - Join takes MIN (weakens the guarantee)
 
 - Mixed constraints: Intervals on (e - a) differences
   - Enable bidirectional propagation: E -> A -> E and A -> E -> A
@@ -37,6 +48,129 @@ DOMAIN STRUCTURE
 
 import pytest
 from . import maymust_dbm as MM
+
+
+# =============================================================================
+# Example 0: Interval Intersection (Core Motivation)
+# =============================================================================
+
+class TestExample0_IntervalIntersection:
+    """
+    Core motivating example: tracking accessible memory regions.
+
+    Scenario (from eBPF verifier): A pointer p points into a buffer. We track
+    the interval around p where memory has a certain property (e.g., contains
+    numeric values, not pointers).
+
+    After a branch, we need the INTERSECTION of accessible regions - what is
+    GUARANTEED accessible regardless of which branch was taken.
+    """
+
+    def test_interval_intersection_basic(self):
+        """
+        Branch 1: write to p, p+1  → accessible offsets [0, +1]
+        Branch 2: write to p, p-1  → accessible offsets [-1, 0]
+        After join: guaranteed = intersection = [0, 0]
+
+        We track this as:
+        - a1 = left_reach (how far left is guaranteed)
+        - a2 = right_reach (how far right is guaranteed)
+        """
+        # Branch 1: left_reach=0 (can't go left), right_reach=1 (can go 1 right)
+        b1 = MM.top(0, 2)
+        b1 = MM.assign_a_interval(b1, j=1, L=0, U=100)   # left_reach >= 0
+        b1 = MM.assign_a_interval(b1, j=2, L=1, U=100)   # right_reach >= 1
+
+        # Branch 2: left_reach=1 (can go 1 left), right_reach=0 (can't go right)
+        b2 = MM.top(0, 2)
+        b2 = MM.assign_a_interval(b2, j=1, L=1, U=100)   # left_reach >= 1
+        b2 = MM.assign_a_interval(b2, j=2, L=0, U=100)   # right_reach >= 0
+
+        # Join: MIN on A-variables gives intersection
+        joined = MM.closure(MM.join(b1, b2))
+
+        # Result: left_reach >= min(0, 1) = 0, right_reach >= min(1, 0) = 0
+        assert joined.a_lower(1) == 0  # left_reach
+        assert joined.a_lower(2) == 0  # right_reach
+        # Only position 0 (the pointer itself) is guaranteed accessible
+
+    def test_interval_intersection_partial_overlap(self):
+        """
+        Branch 1: accessible offsets [-2, +3]
+        Branch 2: accessible offsets [-1, +5]
+        Intersection: [-1, +3]
+        """
+        # left_reach = how far left (positive number)
+        # right_reach = how far right (positive number)
+
+        # Branch 1: left=2, right=3
+        b1 = MM.top(0, 2)
+        b1 = MM.assign_a_interval(b1, j=1, L=2, U=100)
+        b1 = MM.assign_a_interval(b1, j=2, L=3, U=100)
+
+        # Branch 2: left=1, right=5
+        b2 = MM.top(0, 2)
+        b2 = MM.assign_a_interval(b2, j=1, L=1, U=100)
+        b2 = MM.assign_a_interval(b2, j=2, L=5, U=100)
+
+        joined = MM.closure(MM.join(b1, b2))
+
+        # Intersection: left=min(2,1)=1, right=min(3,5)=3
+        assert joined.a_lower(1) == 1  # left_reach
+        assert joined.a_lower(2) == 3  # right_reach
+
+    def test_why_single_size_fails(self):
+        """
+        Demonstrate why a single 'size' variable cannot capture interval intersection.
+
+        Both branches have size=2, but intersection has size=1.
+        A single variable loses the POSITION information.
+        """
+        # If we tried to track just "size" (total accessible count):
+        # Branch 1: [0, +1] has size 2
+        # Branch 2: [-1, 0] has size 2
+        # After join with standard over-approx: size = 2
+        # WRONG! The intersection [0, 0] has size 1.
+
+        # With may-must tracking left_reach and right_reach:
+        b1 = MM.top(0, 2)
+        b1 = MM.assign_a_interval(b1, j=1, L=0, U=0)  # left=0 (exact)
+        b1 = MM.assign_a_interval(b1, j=2, L=1, U=1)  # right=1 (exact)
+
+        b2 = MM.top(0, 2)
+        b2 = MM.assign_a_interval(b2, j=1, L=1, U=1)  # left=1 (exact)
+        b2 = MM.assign_a_interval(b2, j=2, L=0, U=0)  # right=0 (exact)
+
+        joined = MM.closure(MM.join(b1, b2))
+
+        # Correct intersection: left=0, right=0
+        # Total size = left + right + 1 = 0 + 0 + 1 = 1
+        assert joined.a_lower(1) == 0
+        assert joined.a_lower(2) == 0
+
+    def test_access_within_guaranteed_region(self):
+        """
+        After computing guaranteed region, verify an access is within bounds.
+
+        Scenario: pointer p with guaranteed region, accessing p + offset.
+        Safe if: -left_reach <= offset < right_reach (for 0-indexed access)
+        Or: offset < right_reach (positive direction check)
+        """
+        # After some computation: left_reach >= 3, right_reach >= 5
+        st = MM.top(1, 2)  # e1 = offset, a1 = left_reach, a2 = right_reach
+        st = MM.assign_a_interval(st, j=1, L=3, U=100)  # left_reach >= 3
+        st = MM.assign_a_interval(st, j=2, L=5, U=100)  # right_reach >= 5
+
+        # Access at offset = 4 (fixed)
+        st = MM.assign_e_interval(st, i=1, L=4, U=4)
+
+        # Check: offset < right_reach?
+        # upper(offset) = 4 < lower(right_reach) = 5? YES, 4 < 5
+        assert MM.check_e_lt_a(st, i=1, j=2)  # offset < right_reach: SAFE
+
+        # Access at offset = 5 would NOT be safe
+        st2 = MM.assign_e_interval(st, i=1, L=5, U=5)
+        assert not MM.check_e_lt_a(st2, i=1, j=2)  # 5 < 5 is FALSE: NOT safe
 
 
 # =============================================================================
@@ -84,11 +218,12 @@ class TestExample1_BasicArrayBounds:
 
     def test_join_preserves_lower_bound(self):
         """
-        Key property: join takes MIN of size lower bounds.
+        Key property: join takes MIN of guaranteed lower bounds.
 
-        This is what distinguishes may-must from standard DBM:
-        - Standard DBM: after join, "size could be 7 to 10" (useless for safety)
-        - May-Must DBM: after join, "size is definitely at least 7" (useful!)
+        For A-variables (must-quantities), join computes the weakest guarantee:
+        - Branch 1: size guaranteed >= 10
+        - Branch 2: size guaranteed >= 7
+        - Join: size guaranteed >= min(10, 7) = 7
         """
         b1 = MM.top(0, 1)
         b1 = MM.assign_a_interval(b1, j=1, L=10, U=100)
